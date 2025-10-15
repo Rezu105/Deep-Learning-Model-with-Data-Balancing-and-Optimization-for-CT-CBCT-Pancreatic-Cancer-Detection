@@ -14,12 +14,17 @@ import gc
 from collections import Counter
 import tensorflow as tf
 
-# Set random seeds for reproducibility
+
+
 np.random.seed(42)
 tf.random.set_seed(42)
 
 def load_and_preprocess_dicom(dcm_path, img_size=(128, 128)):
-    """Load and preprocess DICOM file with enhanced error handling"""
+
+
+           """load and preprocess dicom files"""
+
+
     try:
         dcm = pydicom.dcmread(dcm_path, force=True)
         if not hasattr(dcm, 'pixel_array'):
@@ -28,29 +33,29 @@ def load_and_preprocess_dicom(dcm_path, img_size=(128, 128)):
             
         img = dcm.pixel_array
         
-        # Handle 3D arrays by taking middle slice
+        #for middle slice
         if len(img.shape) == 3:
-            img = img[img.shape[0] // 2]  # Middle slice
+            img = img[img.shape[0] // 2] 
             
-        # Convert and normalize using DICOM metadata
+        #convert and normalize using dicom
         img = img.astype(np.float32)
         if hasattr(dcm, 'RescaleSlope'):
             img = img * float(dcm.RescaleSlope)
         if hasattr(dcm, 'RescaleIntercept'):
             img = img + float(dcm.RescaleIntercept)
             
-        # Skip empty/invalid images
+        #skip empty/invalid images
         img_min, img_max = np.min(img), np.max(img)
         if img_max <= img_min:
             print(f"Skipped {dcm_path}: Invalid pixel range ({img_min}, {img_max})")
             return None
             
-        # Normalize and apply noise reduction
+        #normalize and apply noise reduction
         img = (img - img_min) / (img_max - img_min)
         img = cv2.GaussianBlur(img, (3,3), sigmaX=1.0)
         img = cv2.medianBlur(img, 3)  # Additional noise reduction
         
-        # Resize and add channel dimension
+        #resize and add channel dimension
         img = cv2.resize(img, img_size, interpolation=cv2.INTER_AREA)
         return np.expand_dims(img, axis=-1)
         
@@ -59,21 +64,21 @@ def load_and_preprocess_dicom(dcm_path, img_size=(128, 128)):
         return None
 
 def load_large_dataset(base_path, max_images=18000, img_size=(128, 128)):
-    """Load dataset with improved class balancing"""
+    """load dataset with improved class balancing"""
     images = []
     labels = []
     count = 0
     
     print(f"[INFO] Loading up to {max_images} images...")
     
-    # First count samples per class
+    #first count samples per class (need to check this later for improvement)
     class_counts = Counter()
     for root, _, files in os.walk(base_path):
         for file in files:
             if file.lower().endswith('.dcm'):
                 class_counts[os.path.basename(root)] += 1
     
-    # Remove classes with < 2 samples
+    #remove classes with  2 samples
     valid_classes = {cls for cls, count in class_counts.items() if count >= 2}
     if not valid_classes:
         raise ValueError("No classes with sufficient samples (minimum 2 per class)")
@@ -82,7 +87,7 @@ def load_large_dataset(base_path, max_images=18000, img_size=(128, 128)):
     for cls, cnt in class_counts.items():
         print(f"Class {cls}: {cnt} samples")
     
-    # Load images with progress tracking
+    #load images
     for root, _, files in os.walk(base_path):
         class_name = os.path.basename(root)
         if class_name not in valid_classes:
@@ -134,32 +139,30 @@ def build_model(input_shape, num_classes):
     return model
 
 def main():
-    # Configuration
     base_path = r"D:\NBIA Pancreatic images\manifest-1661266724052\Pancreatic-CT-CBCT-SEG"
     img_size = (128, 128)
-    max_images = 18000  # Matches your thesis requirement
+    max_images = 18000
     test_size = 0.2
-    val_size = 0.25  # 20% test, 20% val (25% of remaining after test)
+    val_size = 0.25  
     random_state = 42
     batch_size = 64
     
     try:
-        # Load dataset
+        #load dataset
         images, labels = load_large_dataset(base_path, max_images, img_size)
         
-        # Prepare labels
+        #prepare labels
         unique_labels = np.unique(labels)
         label_to_idx = {label: i for i, label in enumerate(unique_labels)}
         y = np.array([label_to_idx[label] for label in labels])
         
-        # Compute class weights for imbalance
+        #compute class weights for imbalance
         class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
         class_weights = dict(enumerate(class_weights))
         
-        # Convert to categorical
         y = to_categorical(y)
         
-        # Proper dataset split (60-20-20)
+        #proper dataset split (60-20-20)
         X_train, X_test, y_train, y_test = train_test_split(
             images, y, 
             test_size=test_size, 
@@ -173,15 +176,15 @@ def main():
             stratify=y_train
         )
         
-        # Free memory
+        #free memory space (improvements needed later)
         del images, labels
         gc.collect()
         
-        # Build and train model
+        #build and train model
         model = build_model((img_size[0], img_size[1], 1), len(unique_labels))
         model.summary()
         
-        # Callbacks
+        #callbacks
         callbacks = [
             EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True),
             ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=3)
@@ -197,7 +200,7 @@ def main():
             verbose=1
         )
         
-        # Evaluation
+        #evaluation
         print("\n=== Final Evaluation ===")
         test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
         print(f"\nTest Accuracy: {test_acc:.4f}")
@@ -210,7 +213,7 @@ def main():
         print("\nClassification Report:")
         print(classification_report(y_true_classes, y_pred_classes, target_names=unique_labels))
         
-        # Create the three figures as requested
+        #figures
         # Figure 1: Accuracy
         plt.figure(figsize=(8, 5))
         plt.plot(history.history['accuracy'], label='Train Accuracy')
