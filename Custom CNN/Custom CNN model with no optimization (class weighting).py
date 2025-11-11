@@ -14,159 +14,199 @@ import gc
 from collections import Counter
 import tensorflow as tf
 
+# extra optimizers used in other experiments (not used in this baseline script)
+# import tensorflow_addons as tfa             # For RAdam, Lion  (pip install tensorflow-addons)
+# from adabelief_tf import AdaBelief          # For AdaBelief    (pip install adabelief-tf)
 
+# extra data balancing techniques used in other experiments
+# from imblearn.over_sampling import RandomOverSampler  # SMOT (simple minority oversampling)
+# from imblearn.over_sampling import SMOTE              # SMOTE
+# from imblearn.combine import SMOTEENN                 # SMOTE + ENN
 
+# setting random seeds for reproducibility
 np.random.seed(42)
 tf.random.set_seed(42)
 
+
 def load_and_preprocess_dicom(dcm_path, img_size=(128, 128)):
-
-
-           """load and preprocess dicom files"""
-
-
+    """load and preprocess dicom files"""
     try:
         dcm = pydicom.dcmread(dcm_path, force=True)
         if not hasattr(dcm, 'pixel_array'):
             print(f"Skipped {dcm_path}: No pixel array")
             return None
-            
+
         img = dcm.pixel_array
-        
-        #for middle slice
+
+        # for middle slice
         if len(img.shape) == 3:
-            img = img[img.shape[0] // 2] 
-            
-        #convert and normalize using dicom
+            img = img[img.shape[0] // 2]
+
+        # convert and normalize using dicom metadata
         img = img.astype(np.float32)
         if hasattr(dcm, 'RescaleSlope'):
             img = img * float(dcm.RescaleSlope)
         if hasattr(dcm, 'RescaleIntercept'):
             img = img + float(dcm.RescaleIntercept)
-            
-        #skip empty/invalid images
+
+        # skip empty/invalid images
         img_min, img_max = np.min(img), np.max(img)
         if img_max <= img_min:
             print(f"Skipped {dcm_path}: Invalid pixel range ({img_min}, {img_max})")
             return None
-            
-        #normalize and apply noise reduction
+
+        # normalize and apply noise reduction
         img = (img - img_min) / (img_max - img_min)
-        img = cv2.GaussianBlur(img, (3,3), sigmaX=1.0)
-        img = cv2.medianBlur(img, 3)  # Additional noise reduction
-        
-        #resize and add channel dimension
+        img = cv2.GaussianBlur(img, (3, 3), sigmaX=1.0)
+        img = cv2.medianBlur(img, 3)  # additional noise reduction
+
+        # resize and add channel dimension
         img = cv2.resize(img, img_size, interpolation=cv2.INTER_AREA)
         return np.expand_dims(img, axis=-1)
-        
+
     except Exception as e:
         print(f"Error processing {dcm_path}: {str(e)}")
         return None
+
 
 def load_large_dataset(base_path, max_images=18000, img_size=(128, 128)):
     """load dataset with improved class balancing"""
     images = []
     labels = []
     count = 0
-    
+
     print(f"[INFO] Loading up to {max_images} images...")
-    
-    #first count samples per class (need to check this later for improvement)
+
+    # first count samples per class
     class_counts = Counter()
     for root, _, files in os.walk(base_path):
         for file in files:
             if file.lower().endswith('.dcm'):
                 class_counts[os.path.basename(root)] += 1
-    
-    #remove classes with  2 samples
+
+    # remove classes with < 2 samples
     valid_classes = {cls for cls, count in class_counts.items() if count >= 2}
     if not valid_classes:
         raise ValueError("No classes with sufficient samples (minimum 2 per class)")
-    
+
     print(f"Valid classes: {len(valid_classes)}")
     for cls, cnt in class_counts.items():
         print(f"Class {cls}: {cnt} samples")
-    
-    #load images
+
+    # load images
     for root, _, files in os.walk(base_path):
         class_name = os.path.basename(root)
         if class_name not in valid_classes:
             continue
-            
+
         for file in files:
             if count >= max_images:
                 break
-                
+
             if file.lower().endswith('.dcm'):
                 img = load_and_preprocess_dicom(os.path.join(root, file), img_size)
                 if img is not None:
                     images.append(img)
                     labels.append(class_name)
                     count += 1
-                    
+
                     if count % 500 == 0:
                         print(f"Loaded {count} images")
                         gc.collect()
-    
+
     print(f"\nFinished loading. Total: {count} images")
     return np.array(images, dtype=np.float16), np.array(labels)
 
+
 def build_model(input_shape, num_classes):
-    """Enhanced CNN model with BatchNorm and regularization"""
+    """enhanced cnn model with batchnorm and regularization"""
     model = Sequential([
-        Conv2D(32, (3,3), activation='relu', input_shape=input_shape),
+        Conv2D(32, (3, 3), activation='relu', input_shape=input_shape),
         BatchNormalization(),
-        MaxPooling2D((2,2)),
+        MaxPooling2D((2, 2)),
         Dropout(0.25),
-        
-        Conv2D(64, (3,3), activation='relu'),
+
+        Conv2D(64, (3, 3), activation='relu'),
         BatchNormalization(),
-        MaxPooling2D((2,2)),
+        MaxPooling2D((2, 2)),
         Dropout(0.25),
-        
-        Conv2D(128, (3,3), activation='relu'),
+
+        Conv2D(128, (3, 3), activation='relu'),
         BatchNormalization(),
-        MaxPooling2D((2,2)),
-        
+        MaxPooling2D((2, 2)),
+
         Flatten(),
         Dense(128, activation='relu'),
         Dropout(0.5),
         Dense(num_classes, activation='softmax')
     ])
-    
-    model.compile(loss='categorical_crossentropy',
-                 metrics=['accuracy'])
+
+    # baseline: data balancing with class weights, default optimizer (no optimizer tuning)
+    model.compile(
+        optimizer='adam',                    
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
     return model
+
 
 def main():
     base_path = r"D:\NBIA Pancreatic images\manifest-1661266724052\Pancreatic-CT-CBCT-SEG"
     img_size = (128, 128)
     max_images = 18000
     test_size = 0.2
-    val_size = 0.25  
+    val_size = 0.25   # 20% of original becomes val (60-20-20 split)
     random_state = 42
     batch_size = 64
-    
+
     try:
-        #load dataset
+        # load dataset
         images, labels = load_large_dataset(base_path, max_images, img_size)
-        
-        #prepare labels
+
+        # prepare labels
         unique_labels = np.unique(labels)
         label_to_idx = {label: i for i, label in enumerate(unique_labels)}
         y = np.array([label_to_idx[label] for label in labels])
-        
-        #compute class weights for imbalance
+
+        # compute class weights for imbalance (data balancing configuration)
         class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
         class_weights = dict(enumerate(class_weights))
-        
+
+        # alternative data balancing techniques used in other experiments (commented)
+        # smot (simple minority oversampling technique via random oversampling)
+        # ros = RandomOverSampler()
+        # X_res, y_res = ros.fit_resample(
+        #     images.reshape(len(images), -1),
+        #     y
+        # )
+        #
+        # smote (synthetic minority oversampling technique)
+        # smote = SMOTE()
+        # X_res, y_res = smote.fit_resample(
+        #     images.reshape(len(images), -1),
+        #     y
+        # )
+        #
+        # smote + enn (combined oversampling and cleaning)
+        # smote_enn = SMOTEENN()
+        # X_res, y_res = smote_enn.fit_resample(
+        #     images.reshape(len(images), -1),
+        #     y
+        # )
+        #
+        # after using smot / smote / smote+enn:
+        # X_res = X_res.reshape(-1, img_size[0], img_size[1], 1)
+        # y_res = to_categorical(y_res)
+        # and use X_res, y_res instead of images, y for the train/val/test split
+
+        # convert to categorical (for class weighting case)
         y = to_categorical(y)
-        
-        #proper dataset split (60-20-20)
+
+        # proper dataset split (60-20-20)
         X_train, X_test, y_train, y_test = train_test_split(
-            images, y, 
-            test_size=test_size, 
-            random_state=random_state, 
+            images, y,
+            test_size=test_size,
+            random_state=random_state,
             stratify=y
         )
         X_train, X_val, y_train, y_val = train_test_split(
@@ -175,46 +215,46 @@ def main():
             random_state=random_state,
             stratify=y_train
         )
-        
-        #free memory space (improvements needed later)
+
+        # free memory space
         del images, labels
         gc.collect()
-        
-        #build and train model
+
+        # build and train model
         model = build_model((img_size[0], img_size[1], 1), len(unique_labels))
         model.summary()
-        
-        #callbacks
+
+        # callbacks
         callbacks = [
             EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True),
             ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=3)
         ]
-        
+
         history = model.fit(
             X_train, y_train,
             validation_data=(X_val, y_val),
-            epochs=30,  # Increased for LR scheduling
+            epochs=30,
             batch_size=batch_size,
             class_weight=class_weights,
             callbacks=callbacks,
             verbose=1
         )
-        
-        #evaluation
+
+        # evaluation
         print("\n=== Final Evaluation ===")
         test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
         print(f"\nTest Accuracy: {test_acc:.4f}")
         print(f"Test Loss: {test_loss:.4f}")
-        
+
         y_pred = model.predict(X_test, verbose=0)
         y_pred_classes = np.argmax(y_pred, axis=1)
         y_true_classes = np.argmax(y_test, axis=1)
-        
+
         print("\nClassification Report:")
         print(classification_report(y_true_classes, y_pred_classes, target_names=unique_labels))
-        
-        #figures
-        # Figure 1: Accuracy
+
+        # figures
+        # figure 1: accuracy
         plt.figure(figsize=(8, 5))
         plt.plot(history.history['accuracy'], label='Train Accuracy')
         plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
@@ -223,8 +263,8 @@ def main():
         plt.xlabel('Epoch')
         plt.legend()
         plt.show()
-        
-        # Figure 2: Loss
+
+        # figure 2: loss
         plt.figure(figsize=(8, 5))
         plt.plot(history.history['loss'], label='Train Loss')
         plt.plot(history.history['val_loss'], label='Validation Loss')
@@ -233,8 +273,8 @@ def main():
         plt.xlabel('Epoch')
         plt.legend()
         plt.show()
-        
-        # Figure 3: Precision, Recall, F1 Score
+
+        # figure 3: precision, recall, f1 score
         plt.figure(figsize=(8, 5))
         metrics = ['Precision', 'Recall', 'F1-Score']
         values = [
@@ -247,9 +287,10 @@ def main():
         plt.ylabel('Score')
         plt.ylim(0, 1)
         plt.show()
-        
+
     except Exception as e:
         print(f"\nError: {str(e)}")
+
 
 if __name__ == "__main__":
     main()
