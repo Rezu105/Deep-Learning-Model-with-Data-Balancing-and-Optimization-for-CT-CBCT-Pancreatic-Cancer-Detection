@@ -21,6 +21,11 @@ import tensorflow as tf
 # from adabelief_tf import AdaBelief         
 # For AdaBelief     (pip install adabelief-tf)
 
+# extra data balancing techniques used in experiments
+# from imblearn.over_sampling import RandomOverSampler  # SMOT (simple minority oversampling)
+# from imblearn.over_sampling import SMOTE              # SMOTE
+# from imblearn.combine import SMOTEENN                 # SMOTE + ENN
+
 #setting random seeds for reproducibility
 np.random.seed(42)
 tf.random.set_seed(42)
@@ -180,6 +185,35 @@ def main():
         #compute class weights for imbalance
         class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
         class_weights = dict(enumerate(class_weights))
+
+        #alternative data balancing techniques used in experiments
+        # smot
+        #ros = RandomOverSampler()
+        #X_res, y_res = ros.fit_resample(
+        #    images.reshape(len(images), -1),
+        #    y
+        #)
+        #
+        # smote (synthetic minority oversampling technique)
+        #smote = SMOTE()
+        #X_res, y_res = smote.fit_resample(
+        #    images.reshape(len(images), -1),
+        #    y
+        #)
+        #
+        # smote + enn (combined oversampling and cleaning)
+        #smote_enn = SMOTEENN()
+        #X_res, y_res = smote_enn.fit_resample(
+        #    images.reshape(len(images), -1),
+        #    y
+        #)
+        #
+        # after using smot / smote / smote+enn:
+        #X_res = X_res.reshape(-1, img_size[0], img_size[1], 1)
+        #y_res = to_categorical(y_res)
+        # and use X_res, y_res instead of images, y for the train/val/test split
+        
+        #convert to categorical (for class weighting case)
         
         #convert to categorical
         y = to_categorical(y)
@@ -275,3 +309,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
